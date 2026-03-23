@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>Mesa do Mestre — v2</title>
+<title>Mesa do Mestre — v3</title>
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=Cinzel+Decorative:wght@400;700&family=IM+Fell+English:ital@0;1&family=Fira+Code:wght@400;500&display=swap" rel="stylesheet"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -300,27 +300,34 @@ body::before{content:'';position:fixed;inset:0;background-image:url("data:image/
     <div class="hub-title">Mesa do Mestre</div>
     <div class="hub-sub">Escolha um módulo para começar</div>
     <div class="hub-divider"></div>
-    <div class="hub-modules">
+    <div class="hub-modules" style="grid-template-columns:1fr 1fr">
       <div class="hub-module gold" onclick="goToSetup()">
         <span class="mod-icon">📜</span>
-        <div class="mod-name">Configurar Aventura</div>
-        <div class="mod-desc">Cadastre sua aventura e personagens do grupo para começar uma sessão</div>
+        <div class="mod-name">Nova Aventura</div>
+        <div class="mod-desc">Cadastre aventura e personagens do grupo para iniciar uma nova sessão</div>
       </div>
-      <div class="hub-module arc" onclick="goToSession()">
+      <div class="hub-module arc" onclick="goToSession()" id="hub-session-btn">
         <span class="mod-icon">🎭</span>
         <div class="mod-name">Sessão ao Vivo</div>
-        <div class="mod-desc">Narre em tempo real com feedback do orientador e jogadores IA paralelos</div>
+        <div class="mod-desc" id="hub-session-desc">Configure uma aventura primeiro para iniciar a sessão</div>
+      </div>
+    </div>
+    <div class="hub-modules" style="grid-template-columns:1fr 1fr;margin-top:0">
+      <div class="hub-module" style="border-color:rgba(200,104,32,.3)" onclick="document.getElementById('hub-file-input').click()">
+        <span class="mod-icon">🔄</span>
+        <div class="mod-name" style="color:var(--amber3)">Continuar Sessão</div>
+        <div class="mod-desc" id="hub-continue-desc">Carregue um arquivo .json salvo para retomar de onde parou</div>
       </div>
       <div class="hub-module teal" onclick="goToTraining()">
         <span class="mod-icon">📚</span>
         <div class="mod-name">Treino de Narração</div>
-        <div class="mod-desc">Exercícios práticos baseados no guia A Arte de Narrar para evoluir suas habilidades</div>
+        <div class="mod-desc">Exercícios práticos baseados no guia A Arte de Narrar</div>
       </div>
     </div>
+    <input type="file" id="hub-file-input" accept=".json" style="display:none" onchange="handleFileLoad(event,'hub')"/>
     <div class="hub-bottom">
       <button class="btn btn-ghost btn-sm" onclick="goToApiScreen()">🔑 Trocar Chave API</button>
-      <button class="btn btn-ghost btn-sm" id="hub-load-btn" onclick="document.getElementById('hub-file-input').click()">📂 Carregar Sessão</button>
-      <input type="file" id="hub-file-input" accept=".json" style="display:none" onchange="handleFileLoad(event)"/>
+      <span id="hub-session-info" style="font-family:var(--font-mono);font-size:.68rem;color:var(--text3)"></span>
     </div>
   </div>
 </div>
@@ -611,16 +618,37 @@ let exerciseResponses = {};
 
 /* ─── BOOT ─── */
 window.addEventListener('DOMContentLoaded', ()=>{
-  const saved = localStorage.getItem('mdm_api_key');
-  if(saved){ STATE.apiKey = saved; showScreen('hub'); }
+  const savedKey = localStorage.getItem('mdm_api_key');
+  if(savedKey){ STATE.apiKey = savedKey; showScreen('hub'); }
   else showScreen('api');
+
+  // Restore last session from localStorage
+  const savedSession = localStorage.getItem('mdm_session');
+  if(savedSession){
+    try{
+      const data = JSON.parse(savedSession);
+      if(data.adventure) STATE.adventure = {...STATE.adventure, ...data.adventure};
+      if(data.characters && data.characters.length) STATE.characters = data.characters;
+      if(data.history){ STATE.history = data.history; STATE.round = data.round||0; }
+      const t=document.getElementById('adv-title');
+      const p=document.getElementById('adv-premise');
+      const to=document.getElementById('adv-tone');
+      const h=document.getElementById('adv-hooks');
+      if(t&&STATE.adventure.title)  t.value  = STATE.adventure.title;
+      if(p&&STATE.adventure.premise) p.value = STATE.adventure.premise;
+      if(to&&STATE.adventure.tone)  to.value = STATE.adventure.tone;
+      if(h&&STATE.adventure.hooks)  h.value  = STATE.adventure.hooks;
+    }catch(e){}
+  }
+
   const savedTraining = localStorage.getItem('mdm_training');
   if(savedTraining){ try{ STATE.training = JSON.parse(savedTraining); }catch(e){} }
-  buildTrainingNav();
-  // prefill setup
-  if(STATE.characters.length===0) addCharacter(), addCharacter();
-  renderChars();
+
+  if(STATE.characters.length===0){ addCharacter(); addCharacter(); }
+  else renderChars();
   updateAddBtn();
+  buildTrainingNav();
+  updateHubState();
 });
 
 /* ─── SCREENS ─── */
@@ -631,8 +659,48 @@ function showScreen(id){
 function goToApiScreen(){ showScreen('api'); }
 function goToSetup(){ showScreen('setup'); }
 function goToSession(){
-  if(!STATE.adventure.title){ toast('⚠ Configure a aventura primeiro.'); showScreen('setup'); return; }
-  buildSessionUI(); showScreen('session');
+  if(!STATE.adventure.title){
+    toast('⚠ Configure a aventura primeiro.');
+    showScreen('setup');
+    return;
+  }
+  if(STATE.history.length > 0){
+    resumeSession();
+  } else {
+    buildSessionUI(true);
+    showScreen('session');
+  }
+}
+
+function resumeSession(){
+  // Called after loading a file with existing history
+  buildSessionUI();
+  // Rebuild history in the scroll
+  const scroll = document.getElementById('history-scroll');
+  scroll.innerHTML = '';
+  if(STATE.history.length === 0){
+    scroll.innerHTML = `<div class="empty-state" style="margin:auto">✦ Continue a sessão de onde parou.</div>`;
+    return;
+  }
+  STATE.history.forEach((entry, idx) => {
+    if(entry.type !== 'round') return;
+    const el = document.createElement('div');
+    el.className = 'history-entry';
+    el.id = `he-${idx}`;
+    // Round number recovery
+    const rNum = entry.round || (idx+1);
+    el.innerHTML = `
+      <div class="history-entry-header">
+        <span class="history-tag tag-round">Rodada ${rNum}</span>
+        <span class="history-timestamp">${entry.ts||''}</span>
+      </div>
+      <div class="history-narration">${formatText(entry.narration)}</div>
+      ${entry.playersRaw ? `<div class="history-round-summary">Jogadores responderam · Orientador e árbitro consultados.</div>` : ''}
+    `;
+    scroll.appendChild(el);
+  });
+  scroll.scrollTop = scroll.scrollHeight;
+  showScreen('session');
 }
 function goToTraining(){ showScreen('training'); }
 
@@ -708,28 +776,54 @@ function startSession(){
   STATE.adventure.tone=document.getElementById('adv-tone').value;
   STATE.adventure.hooks=document.getElementById('adv-hooks').value.trim();
   STATE.history=[]; STATE.round=0;
-  buildSessionUI(); showScreen('session');
+  buildSessionUI(true); showScreen('session');
 }
 
 /* ─── SESSION ─── */
-function buildSessionUI(){
+function buildSessionUI(fresh=false){
   document.getElementById('session-adv-title').textContent=STATE.adventure.title;
   document.getElementById('session-adv-meta').textContent=`${STATE.adventure.tone} · ${STATE.characters.length} personagem${STATE.characters.length>1?'s':''}`;
   document.getElementById('players-count').textContent=STATE.characters.length;
-  renderPlayersPanel(); renderOrientadorPanel(null);
+  renderPlayersPanel();
+  renderOrientadorPanel(null);
   document.getElementById('arbitro-panel').textContent='Aguardando ações…';
-  document.getElementById('history-scroll').innerHTML=`<div class="empty-state" style="margin:auto">✦ &nbsp;Escreva a primeira narração e clique em Jogar.</div>`;
+  if(fresh || STATE.history.length===0){
+    document.getElementById('history-scroll').innerHTML=`<div class="empty-state" style="margin:auto">✦ &nbsp;Escreva a primeira narração e clique em Jogar.</div>`;
+  }
   updateRoundCounter();
 }
 
-function renderPlayersPanel(responses){
+function renderPlayersPanel(responses, groupDecision){
   const panel=document.getElementById('players-panel');
-  panel.innerHTML=STATE.characters.map((ch,i)=>{
+  const blocks = STATE.characters.map((ch,i)=>{
     const ck=CLASS_KEYS[ch.class]||'fighter';
     const em=CLASS_EMOJIS[ck]||'⚔️';
-    const resp=responses?(responses[i]||'…'):null;
-    return `<div class="player-block"><div class="player-block-head"><div class="player-avatar class-${ck}">${em}</div><div class="player-block-meta"><div class="player-name">${esc(ch.name)}</div><div class="player-class">${ch.race} · ${ch.class}</div></div></div><div class="player-block-body ${resp===null?'loading':''}">${resp===null?'Aguardando…':formatText(resp)}</div></div>`;
+    const resp = responses ? (responses[i] || null) : null;
+    return `<div class="player-block">
+      <div class="player-block-head">
+        <div class="player-avatar class-${ck}">${em}</div>
+        <div class="player-block-meta">
+          <div class="player-name">${esc(ch.name)}</div>
+          <div class="player-class">${ch.race} · ${ch.class}</div>
+        </div>
+      </div>
+      <div class="player-block-body ${resp===null?'loading':''}">${resp===null?'Aguardando…':formatText(resp)}</div>
+    </div>`;
   }).join('');
+
+  const decisionBlock = groupDecision ? `
+    <div class="player-block" style="border-color:rgba(201,168,76,.3);margin-top:6px">
+      <div class="player-block-head" style="background:rgba(201,168,76,.06)">
+        <div style="font-size:1rem">⚔️</div>
+        <div class="player-block-meta">
+          <div class="player-name" style="color:var(--gold2)">Decisão do Grupo</div>
+          <div class="player-class">ação coletiva desta rodada</div>
+        </div>
+      </div>
+      <div class="player-block-body" style="color:var(--gold3);font-style:italic">${formatText(groupDecision)}</div>
+    </div>` : '';
+
+  panel.innerHTML = blocks + decisionBlock;
 }
 
 function renderOrientadorPanel(feedback){
@@ -778,7 +872,9 @@ async function playRound(){
       callGemini(buildArbitroPrompt(advCtx,charBlock,histCtx,narration)),
     ]);
     entry.playersRaw=pr; entry.orientadorRaw=or; entry.arbitroRaw=ar;
-    renderPlayersPanel(parsePlayersResponse(pr,STATE.characters));
+    const parsedPlayers = parsePlayersResponse(pr, STATE.characters);
+    const groupDecision = extractGroupDecision(pr);
+    renderPlayersPanel(parsedPlayers, groupDecision);
     renderOrientadorPanel(or);
     document.getElementById('arbitro-panel').textContent=ar;
     updateHistoryEntry(STATE.history.length-1,entry);
@@ -791,31 +887,139 @@ async function playRound(){
   STATE.loading=false; document.getElementById('play-btn').disabled=false; clearNarration();
 }
 
-function parsePlayersResponse(text,chars){
-  const results=[];
-  for(const ch of chars){
-    const en=ch.name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-    const regex=new RegExp(`(?:^|\\n)(?:\\*{0,2}${en}\\*{0,2}|\\d+\\.?\\s*${en})[:\\-—\\*]*\\s*(.+?)(?=\\n(?:\\*{0,2}\\w+\\*{0,2}|\\d+\\.?)\\s|$)`,'is');
-    const m=text.match(regex);
-    if(m) results.push(m[1].trim());
-    else { const chunks=text.split(/\n{2,}/); results.push(chunks[results.length]||text.split('\n')[results.length]||'…'); }
+function parsePlayersResponse(text, chars){
+  // The prompt asks for XML tags: <PERSONAGEM_1>...</PERSONAGEM_1>
+  // Try XML tags first — most reliable
+  const results = [];
+  for(let i=0;i<chars.length;i++){
+    const tag = `PERSONAGEM_${i+1}`;
+    const m = text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i'));
+    if(m) { results.push(m[1].trim()); continue; }
+    // Fallback: split by character name header (### Name or **Name** or "Name:")
+    const name = chars[i].name;
+    const en = name.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    const hdr = new RegExp(`(?:^|\\n)(?:#{1,3}\\s*|\\*{1,2})${en}(?:\\*{1,2})?[:\\-—]?\\s*([\\s\\S]*?)(?=\\n(?:#{1,3}|\\*{1,2})\\w|$)`, 'i');
+    const hm = text.match(hdr);
+    if(hm) { results.push(hm[1].trim()); continue; }
+    results.push(null);
   }
-  if(results.every(r=>!r||r==='…')){ const chunks=text.split(/\n{2,}/); return chars.map((_,i)=>chunks[i]||text); }
-  return results;
+  // If XML/header failed for ALL chars, split by double-newline paragraphs
+  if(results.every(r=>!r)){
+    const chunks = text.split(/\n{2,}/).filter(c=>c.trim());
+    return chars.map((_,i) => chunks[i] || text);
+  }
+  // Fill any nulls with fallback paragraph
+  const chunks = text.split(/\n{2,}/).filter(c=>c.trim());
+  return results.map((r,i) => r || chunks[i] || '…');
 }
 
 function buildAdventureCtx(){ const a=STATE.adventure; return `AVENTURA: "${a.title}"\nTom: ${a.tone}\nPremissa: ${a.premise}\nGanchos: ${a.hooks||'Não especificados'}`; }
 function buildCharBlock(){ return STATE.characters.map((ch,i)=>`Personagem ${i+1}: ${ch.name} (${ch.race} ${ch.class})\n  Background: ${ch.background||'—'}\n  Motivação: ${ch.motivation||'—'}\n  Personalidade: ${ch.personality||'—'}`).join('\n'); }
-function buildHistoryContext(){ return STATE.history.slice(-6).map(h=>h.type==='round'?`[Rodada] MESTRE: ${h.narration}${h.playersRaw?`\nJOGADORES: ${h.playersRaw.substring(0,400)}…`:''}`:'' ).filter(Boolean).join('\n\n'); }
+function buildHistoryContext(){
+  return STATE.history.slice(-6).map(h => {
+    if(h.type !== 'round') return '';
+    let s = `[Rodada ${h.round||'?'}] MESTRE: ${h.narration}`;
+    if(h.playersRaw){
+      // Extract group decision for compact context
+      const dec = extractGroupDecision(h.playersRaw);
+      if(dec) s += `\nDECISÃO DO GRUPO: ${dec}`;
+      else s += `\nJOGADORES: ${h.playersRaw.substring(0,300)}…`;
+    }
+    return s;
+  }).filter(Boolean).join('\n\n');
+}
 
-function buildPlayersPrompt(adv,chars,history,narration){
-  return `Você é um grupo de jogadores de D&D 5e jogando uma aventura. Interprete CADA personagem separadamente com sua personalidade, motivações e limitações de classe. Para cada personagem, descreva em 2-3 linhas o que ele pensa, o que diz e o que tenta fazer. Seja autêntico ao background. Use primeira pessoa para falas diretas. Separe claramente cada personagem pelo nome como título.\n\n${adv}\n\nPERSONAGENS:\n${chars}\n\nHISTÓRICO:\n${history||'(início da sessão)'}\n\nNARRAÇÃO:\n${narration}\n\nResponda como cada personagem:`;
+function extractGroupDecision(text){
+  const m = text.match(/<DECISAO_GRUPO>([\s\S]*?)<\/DECISAO_GRUPO>/i);
+  return m ? m[1].trim() : null;
+}
+
+function assignGroupRoles(chars){
+  // Assigns narrative roles based on class/personality
+  const roleMap = {
+    'Guerreiro':'pragmático que age primeiro e fala depois',
+    'Paladino':'líder moral que pondera o certo e o errado',
+    'Bárbaro':'impulsivo que reage emocionalmente',
+    'Ladino':'observador silencioso que nota detalhes que os outros perdem',
+    'Mago':'analítico que raciocina sobre causas e consequências',
+    'Feiticeiro':'intuitivo que sente a magia e o perigo no ar',
+    'Bruxo':'cínico que suspeita de tudo e todos',
+    'Clérigo':'guia espiritual que conecta eventos à fé ou destino',
+    'Druida':'sensível ao ambiente e à natureza, desconfia de cidades',
+    'Bardo':'diplomático e observador social, lê pessoas',
+    'Patrulheiro':'cauteloso, lê o ambiente, prefere agir antes de ser visto',
+    'Monge':'calmo e contemplativo, fala pouco mas pesa cada palavra',
+  };
+  return chars.map(ch => ({ ...ch, role: roleMap[ch.class] || 'pensativo e cuidadoso' }));
+}
+
+function buildPlayersPrompt(adv, chars, history, narration){
+  const charsWithRoles = assignGroupRoles(chars);
+  const charDesc = charsWithRoles.map((ch,i) => 
+    `PERSONAGEM_${i+1}: ${ch.name} (${ch.race} ${ch.class})
+  Papel natural no grupo: ${ch.role}
+  Background: ${ch.background||'—'}
+  Motivação pessoal: ${ch.motivation||'—'}
+  Personalidade: ${ch.personality||'—'}`
+  ).join('\n\n');
+
+  const tagList = charsWithRoles.map((_,i) => `<PERSONAGEM_${i+1}>`).join(', ');
+
+  return `Você é um grupo coeso de jogadores de D&D 5e enfrentando uma aventura juntos. Eles se conhecem, confiam uns nos outros (com ressalvas), e reagem como um GRUPO — não como indivíduos isolados. Eles compartilham informações, fazem perguntas entre si, concordam, discordam e tomam decisões coletivas influenciadas pelas personalidades de cada um.
+
+DINÂMICA DO GRUPO:
+- O grupo debate brevemente antes de agir
+- Cada personagem tem um papel natural (veja abaixo) que influencia COMO ele contribui para a decisão coletiva
+- Um personagem pode ser o orador desta rodada, outro o questionador, outro o que age sem perguntar — isso varia conforme a situação
+- As falas devem se REFERIR umas às outras ("concordo com ${charsWithRoles[0]?.name||'o guerreiro'}", "mas ${charsWithRoles[1]?.name||'o ladino'} está certo que...")
+- O grupo chega a UMA decisão coletiva no final, com cada um contribuindo de forma diferente
+
+${adv}
+
+PERSONAGENS E PAPÉIS:
+${charDesc}
+
+HISTÓRICO DA SESSÃO:
+${history||'(início da sessão — primeira cena)'}
+
+NARRAÇÃO DO MESTRE NESTA RODADA:
+${narration}
+
+INSTRUÇÕES DE FORMATO — CRÍTICO:
+Responda com cada personagem dentro de tags XML exatas. Para cada personagem inclua: o que ele PENSA (interno, 1 linha), o que ele DIZ em voz alta (fala direta entre aspas, referenciando outros do grupo quando natural), e o que ele TENTA FAZER (ação proposta). Depois das falas individuais, inclua uma tag <DECISAO_GRUPO> com a ação coletiva que o grupo decide tomar.
+
+${charsWithRoles.map((_,i)=>`<PERSONAGEM_${i+1}>\n[resposta aqui]\n</PERSONAGEM_${i+1}>`).join('\n')}
+<DECISAO_GRUPO>
+[ação coletiva decidida pelo grupo]
+</DECISAO_GRUPO>`;
 }
 function buildOrientadorPrompt(adv,chars,history,narration){
-  return `Você é um mestre de D&D 5e experiente e coach de narração. Analise a narração abaixo com base nos princípios do guia "A Arte de Narrar" e do "Treino de Narração". Dê feedback construtivo organizado em até 5 pontos com título em negrito, cobrindo: (1) Uso dos cinco sentidos e imersão sensorial, (2) Técnica Mostrar-Não-Contar, (3) Ritmo, tensão e curva dramática, (4) Vozes e NPCs, (5) Sugestão prática para a próxima cena. Cite trechos específicos. Seja direto e construtivo. Escreva em português.\n\n${adv}\n\nPERSONAGENS:\n${chars}\n\nHISTÓRICO:\n${history||'(início)'}\n\nNARRAÇÃO A ANALISAR:\n${narration}`;
+  return `Você é um mestre de D&D 5e experiente e coach de narração. Analise a narração abaixo com base nos princípios do guia "A Arte de Narrar" e do "Treino de Narração". Dê feedback construtivo organizado em até 5 pontos com título em negrito, cobrindo: (1) Uso dos cinco sentidos e imersão sensorial, (2) Técnica Mostrar-Não-Contar, (3) Ritmo, tensão e curva dramática, (4) Vozes e NPCs, (5) Sugestão prática para a próxima cena. Cite trechos específicos. Seja direto e construtivo. Escreva em português.
+
+${adv}
+
+GRUPO (${STATE.characters.length} personagens):
+${chars}
+
+HISTÓRICO:
+${history||'(início)'}
+
+NARRAÇÃO A ANALISAR:
+${narration}`;
 }
 function buildArbitroPrompt(adv,chars,history,narration){
-  return `Você é o árbitro de regras D&D 5e. Com base na narração do mestre e nas prováveis reações dos jogadores, determine: quais testes são necessários (atributo, habilidade, CD), se há combate (iniciativa, ataques), dano, condições e efeitos. Seja preciso com as regras da 5ª edição. Formate como lista com marcadores. Se não há testes relevantes, explique brevemente por quê. Escreva em português.\n\n${adv}\n\nPERSONAGENS:\n${chars}\n\nHISTÓRICO:\n${history||'(início)'}\n\nNARRAÇÃO:\n${narration}`;
+  return `Você é o árbitro de regras D&D 5e. Com base na narração do mestre e nas prováveis ações do grupo, determine: quais testes são necessários (atributo, habilidade, CD sugerida), se há combate (iniciativa, ataques, dano), condições e efeitos relevantes. Formate como lista com marcadores (• ). Se não há testes relevantes, explique brevemente. Escreva em português.
+
+${adv}
+
+GRUPO:
+${chars}
+
+HISTÓRICO:
+${history||'(início)'}
+
+NARRAÇÃO:
+${narration}`;
 }
 
 /* ─── TRAINING ─── */
@@ -988,16 +1192,30 @@ async function callGemini(prompt){
 }
 
 /* ─── HISTORY ─── */
-function addToHistory(entry,loading=false){
+function addToHistory(entry, loading=false){
+  entry.round = STATE.round; // store round number in entry
   const scroll=document.getElementById('history-scroll');
   const empty=scroll.querySelector('.empty-state'); if(empty)empty.remove();
   const el=document.createElement('div'); el.className='history-entry'; el.id=`he-${STATE.history.length-1}`;
-  el.innerHTML=`<div class="history-entry-header"><span class="history-tag tag-round">Rodada ${STATE.round}</span><span class="history-timestamp">${entry.ts}</span></div><div class="history-narration">${formatText(entry.narration)}</div>${loading?`<div class="history-round-summary" id="hsum-${STATE.history.length-1}" style="color:var(--text3);font-style:italic">Agentes processando…</div>`:''}`;
+  el.innerHTML=`
+    <div class="history-entry-header">
+      <span class="history-tag tag-round">Rodada ${STATE.round}</span>
+      <span class="history-timestamp">${entry.ts}</span>
+    </div>
+    <div class="history-narration">${formatText(entry.narration)}</div>
+    ${loading?`<div class="history-round-summary" id="hsum-${STATE.history.length-1}" style="color:var(--text3);font-style:italic">Agentes processando…</div>`:''}
+  `;
   scroll.appendChild(el); scroll.scrollTop=scroll.scrollHeight;
 }
-function updateHistoryEntry(idx,entry){
-  const el=document.getElementById(`hsum-${idx}`);
-  if(el){ el.style.color=''; el.style.fontStyle=''; el.innerHTML=`<em>Jogadores responderam</em> · Orientador e árbitro consultados.`; }
+function updateHistoryEntry(idx, entry){
+  const el = document.getElementById(`hsum-${idx}`);
+  if(el){
+    const dec = extractGroupDecision(entry.playersRaw||'');
+    el.style.color=''; el.style.fontStyle='';
+    el.innerHTML = dec
+      ? `<em>Grupo decidiu:</em> ${formatText(dec.substring(0,120))}${dec.length>120?'…':''}`
+      : `<em>Jogadores responderam</em> · Orientador e árbitro consultados.`;
+  }
 }
 function updateRoundCounter(){ document.getElementById('round-counter').textContent=`Rodada ${STATE.round}`; }
 function setStatus(state){ ['players','orientador','arbitro'].forEach(id=>{ const d=document.getElementById(`dot-${id}`); if(d) d.className='status-dot'+(state!=='idle'?' '+state:''); }); }
@@ -1009,19 +1227,52 @@ function saveSetup(){
   const data={adventure:{title:document.getElementById('adv-title').value,premise:document.getElementById('adv-premise').value,tone:document.getElementById('adv-tone').value,hooks:document.getElementById('adv-hooks').value},characters:STATE.characters,savedAt:new Date().toISOString()};
   downloadJSON(data,`mdm_setup_${Date.now()}.json`); toast('💾 Setup salvo!');
 }
-function handleFileLoad(e){
+function handleFileLoad(e, context='hub'){
   const file=e.target.files[0]; if(!file) return;
   const reader=new FileReader();
   reader.onload=ev=>{
     try{
       const data=JSON.parse(ev.target.result);
-      if(data.adventure){ document.getElementById('adv-title').value=data.adventure.title||''; document.getElementById('adv-premise').value=data.adventure.premise||''; document.getElementById('adv-tone').value=data.adventure.tone||'épico heroico'; document.getElementById('adv-hooks').value=data.adventure.hooks||''; }
-      if(data.characters) STATE.characters=data.characters;
+      // Load adventure
+      if(data.adventure){
+        STATE.adventure = {...STATE.adventure, ...data.adventure};
+        // Also fill setup fields if they exist in DOM
+        const t=document.getElementById('adv-title');
+        const p=document.getElementById('adv-premise');
+        const to=document.getElementById('adv-tone');
+        const h=document.getElementById('adv-hooks');
+        if(t) t.value=data.adventure.title||'';
+        if(p) p.value=data.adventure.premise||'';
+        if(to) to.value=data.adventure.tone||'épico heroico';
+        if(h) h.value=data.adventure.hooks||'';
+      }
+      if(data.characters){ STATE.characters=data.characters; renderChars(); updateAddBtn(); }
       if(data.history){ STATE.history=data.history; STATE.round=data.round||0; }
-      renderChars(); updateAddBtn(); toast('📂 Dados carregados!');
-    }catch(err){ toast('⚠ Arquivo inválido.'); }
+
+      updateHubState();
+
+      if(context==='hub' && data.history && data.history.length>0){
+        // Continue session directly
+        resumeSession();
+        toast(`🔄 Sessão retomada — Rodada ${STATE.round}`);
+      } else {
+        toast('📂 Dados carregados!');
+      }
+    }catch(err){ console.error(err); toast('⚠ Arquivo inválido.'); }
   };
   reader.readAsText(file); e.target.value='';
+}
+
+function updateHubState(){
+  // Update hub UI to reflect loaded state
+  const info = document.getElementById('hub-session-info');
+  const desc = document.getElementById('hub-session-desc');
+  const contDesc = document.getElementById('hub-continue-desc');
+  if(STATE.adventure.title){
+    if(info) info.textContent = `"${STATE.adventure.title}" · Rodada ${STATE.round}`;
+    if(desc) desc.textContent = `Continuar "${STATE.adventure.title}" com ${STATE.characters.length} personagem${STATE.characters.length>1?'s':''}`;
+    if(contDesc && STATE.history.length>0) contDesc.textContent = `Sessão atual: "${STATE.adventure.title}" · Rodada ${STATE.round} salva`;
+  }
 }
 function exportSession(){
   const data={adventure:STATE.adventure,characters:STATE.characters,history:STATE.history,round:STATE.round,exportedAt:new Date().toISOString()};
